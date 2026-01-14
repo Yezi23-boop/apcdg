@@ -11,7 +11,7 @@ typedef enum
 
 // wifi状态变化回调函数
 typedef void (*p_wifi_state_callback)(WIFI_STATE state);
-
+typedef void (*p_wifi_scan_callback)(wifi_ap_record_t *ap, int ap_count);
 /** 初始化wifi，默认进入STA模式
  * @param f wifi状态变化回调函数
  * @return 无
@@ -28,4 +28,8 @@ esp_err_t wifi_manager_connect(const char *ssid, const char *password);
  * @return 成功/失败
  */
 esp_err_t wifi_manager_ap(void);
+/** 扫描wifi
+ * @return 成功/失败
+ */
+esp_err_t wifi_manager_scan(p_wifi_scan_callback f);
 #endif
