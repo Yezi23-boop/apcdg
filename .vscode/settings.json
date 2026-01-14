@@ -1,0 +1,8 @@
+{
+  "clangd.path": "d:\\esp32\\.espressif\\tools\\esp-clang\\esp-18.1.2_20240912\\esp-clang\\bin\\clangd.exe",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=c:\\Users\\ye\\Desktop\\apcdg\\build"
+  ]
+}

@@ -1,0 +1,10 @@
+Diagnostics:
+  Suppress: [unused-includes]
+
+CompileFlags:
+  Remove:
+    - -mdisable-hardware-atomics
+    - -fstrict-volatile-bitfields
+    - -fno-tree-switch-conversion
+    - -fno-shrink-wrap
+
