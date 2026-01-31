@@ -76,7 +76,15 @@ esp_err_t get_hyyp_req(httpd_req_t *r)
      * @param http_html 响应内容（HTML字符串）
      * @param HTTPD_RESP_USE_STRLEN 自动计算字符串长度
      */
-    return httpd_resp_send(r, http_html, HTTPD_RESP_USE_STRLEN);
+    esp_err_t ret = httpd_resp_send(r, http_html, HTTPD_RESP_USE_STRLEN);
+
+    // 错误码104 (ECONNRESET) 表示客户端关闭了连接，这是正常情况
+    // 浏览器可能在收到响应前就关闭了连接（刷新页面、导航离开等）
+    if (ret != ESP_OK && ret != ESP_ERR_HTTPD_RESP_SEND)
+    {
+        ESP_LOGW(TAG, "发送HTTP响应失败: %s", esp_err_to_name(ret));
+    }
+    return ESP_OK; // 返回OK避免框架打印额外警告
 }
 
 /**
@@ -291,7 +299,7 @@ esp_err_t ws_server_start(ws_server_config_t *config)
         .user_ctx = NULL,
     };
     httpd_register_uri_handler(server_handle, &uri_favicon);
-    ESP_LOGI(TAG, "注册路由: GET /ws (WebSocket)");
+    ESP_LOGI(TAG, "注册路由: GET /favicon.ico");
 
     return ESP_OK;
 }
