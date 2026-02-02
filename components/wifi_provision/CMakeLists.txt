@@ -1,0 +1,20 @@
+idf_component_register(
+    SRCS 
+        "src/wifi_provision.c"
+        "src/wifi_driver/wifi_manager.c"
+        "src/web_server/ws_server.c"
+    INCLUDE_DIRS 
+        "include"
+    PRIV_INCLUDE_DIRS 
+        "src/wifi_driver"
+        "src/web_server"
+    REQUIRES
+        esp_wifi
+        esp_event
+        esp_netif
+        esp_http_server
+        json
+        lwip
+    EMBED_TXTFILES 
+        "html/apcfg.html"
+)

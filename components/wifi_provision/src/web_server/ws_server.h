@@ -1,7 +1,7 @@
 #ifndef _WS_SERVER_H_
 #define _WS_SERVER_H_
 #include "esp_err.h"
-#include "esp_wifi.h"
+#include <stdint.h>
 typedef void (*ws_server_receive_cb)(const char *data, int len);
 typedef struct
 {

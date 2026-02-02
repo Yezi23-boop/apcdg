@@ -16,13 +16,13 @@
  * - cJSON: JSON数据解析
  */
 
-#include "ap_wifi.h"     // AP配网模块（本项目自定义）
-#include "button_gpio.h" // GPIO按键驱动（espressif__button组件的一部分）
+#include "button_gpio.h"
 #include "driver/gpio.h"
-#include "esp_log.h"    // ESP-IDF日志系统
-#include "iot_button.h" // 按键组件主头文件（提供事件检测API）
-#include "nvs.h"        // NVS存储（用于保存WiFi配置）
-#include "nvs_flash.h"  // NVS Flash初始化
+#include "esp_log.h"
+#include "iot_button.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+#include "wifi_provision.h" // WiFi 配网组件
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <stdio.h>
@@ -60,14 +60,7 @@ static void button_single_click_cb(void *button_handle, void *usr_data)
     ESP_LOGI(TAG, "按键单击！启动AP配网模式...");
     ESP_LOGI(TAG, "========================================");
 
-    /**
-     * 调用AP配网函数，执行以下操作：
-     * 1. 切换WiFi到AP+STA模式
-     * 2. 创建名为"ESP32_wifi"的热点（密码：12345678）
-     * 3. 启动HTTP服务器和WebSocket服务
-     * 4. 等待用户通过网页提交WiFi配置
-     */
-    ap_wifi_apcfg();
+    wifi_provision_start_apcfg();
 }
 
 /*============================================================================
@@ -76,23 +69,18 @@ static void button_single_click_cb(void *button_handle, void *usr_data)
 
 /**
  * @brief WiFi连接状态变化回调
- *
- * @param state 当前WiFi状态：
- *              - WIFI_STATE_CONNECTED: 成功连接并获取IP
- *              - WIFI_STATE_DISCONNECTED: 断开连接
- *              - WIFI_STATE_CONNECT_FAIL: 连接失败（密码错误等）
  */
-static void wifi_state_callback(WIFI_STATE state)
+static void wifi_state_callback(wifi_provision_state_t state)
 {
     switch (state)
     {
-    case WIFI_STATE_CONNECTED:
+    case WIFI_PROVISION_STATE_CONNECTED:
         ESP_LOGI(TAG, "✓ WiFi已连接！可以进行网络操作了");
         break;
-    case WIFI_STATE_DISCONNECTED:
+    case WIFI_PROVISION_STATE_DISCONNECTED:
         ESP_LOGW(TAG, "✗ WiFi断开连接");
         break;
-    case WIFI_STATE_CONNECT_FAIL:
+    case WIFI_PROVISION_STATE_CONNECT_FAIL:
         ESP_LOGW(TAG, "✗ WiFi连接失败，请检查密码");
         break;
     }
@@ -132,11 +120,10 @@ void app_main(void)
     ESP_LOGI(TAG, "NVS初始化完成");
 
     /*------------------------------------------------------------------------
-     * 第二步：初始化AP WiFi模块
-     * 这会初始化WiFi驱动、SPIFFS文件系统、创建配网任务
+     * 第二步：初始化 WiFi 配网组件
      *------------------------------------------------------------------------*/
-    ap_wifi_init(wifi_state_callback);
-    ESP_LOGI(TAG, "AP WiFi模块初始化完成");
+    wifi_provision_init(wifi_state_callback);
+    ESP_LOGI(TAG, "WiFi 配网组件初始化完成");
 
     /*------------------------------------------------------------------------
      * 第三步：配置按钮参数
