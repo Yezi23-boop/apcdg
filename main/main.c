@@ -80,16 +80,21 @@ static void button_single_click_cb(void *button_handle, void *usr_data)
  * @param state 当前WiFi状态：
  *              - WIFI_STATE_CONNECTED: 成功连接并获取IP
  *              - WIFI_STATE_DISCONNECTED: 断开连接
+ *              - WIFI_STATE_CONNECT_FAIL: 连接失败（密码错误等）
  */
 static void wifi_state_callback(WIFI_STATE state)
 {
-    if (state == WIFI_STATE_CONNECTED)
+    switch (state)
     {
+    case WIFI_STATE_CONNECTED:
         ESP_LOGI(TAG, "✓ WiFi已连接！可以进行网络操作了");
-    }
-    else
-    {
+        break;
+    case WIFI_STATE_DISCONNECTED:
         ESP_LOGW(TAG, "✗ WiFi断开连接");
+        break;
+    case WIFI_STATE_CONNECT_FAIL:
+        ESP_LOGW(TAG, "✗ WiFi连接失败，请检查密码");
+        break;
     }
 }
 

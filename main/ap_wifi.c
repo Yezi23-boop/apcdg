@@ -64,6 +64,16 @@ static EventGroupHandle_t apcfg_ev;
 
 /** 事件位：用户已提交WiFi配置，准备连接 */
 #define APCFG_WIFI_CONNECTED_BIT BIT0
+/** 事件位：WiFi连接失败，需要重新配网 */
+#define APCFG_WIFI_FAIL_BIT BIT1
+/** 事件位：WiFi连接成功 */
+#define APCFG_WIFI_SUCCESS_BIT BIT2
+
+/** 配网状态标志：true表示正在配网流程中 */
+static bool is_configuring = false;
+
+/** 用户注册的WiFi状态回调（传递给main.c） */
+static p_wifi_state_callback user_wifi_cb = NULL;
 
 /*============================================================================
  *                           SPIFFS文件操作
@@ -138,57 +148,138 @@ static char *init_web_page_buffer(void)
  *============================================================================*/
 
 /**
- * @brief AP配网后台任务
+ * @brief 发送配网状态JSON给网页
  *
- * 【任务职责】
- * 持续等待用户通过网页提交WiFi配置
- * 收到配置后执行WiFi连接操作
- *
- * 【事件组机制说明】
- * xEventGroupWaitBits() 会阻塞任务，直到：
- * 1. 指定的事件位被设置（有人调用了xEventGroupSetBits）
- * 2. 或者超时（这里设置了10秒超时）
- *
- * 使用事件组而不是直接在WebSocket回调中连接WiFi的原因：
- * - WebSocket回调运行在HTTP服务器任务中
- * - WiFi连接操作可能阻塞较长时间
- * - 在回调中执行长时间操作会影响服务器响应
- *
- * @param arg 任务参数（未使用）
+ * @param status "connected" 或 "failed"
+ * @param ssid   连接的WiFi名称
+ * @param ip     IP地址（成功时）或NULL（失败时）
  */
+static void send_status_to_web(const char *status, const char *ssid, const char *ip)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "status", status);
+    cJSON_AddStringToObject(root, "ssid", ssid);
+    if (ip)
+    {
+        cJSON_AddStringToObject(root, "ip", ip);
+    }
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    ESP_LOGI(TAG, "发送配网状态: %s", json_str);
+    ws_server_send((uint8_t *)json_str, strlen(json_str));
+
+    cJSON_free(json_str);
+    cJSON_Delete(root);
+}
+
 static void ap_wifi_task(void *arg)
 {
     EventBits_t ev; // 用于存储等待到的事件位
+    /** 等待的所有事件位 */
+    const EventBits_t ALL_BITS = APCFG_WIFI_CONNECTED_BIT | APCFG_WIFI_FAIL_BIT | APCFG_WIFI_SUCCESS_BIT;
 
     while (1)
     {
         /**
-         * xEventGroupWaitBits 参数说明：
-         * @param apcfg_ev               事件组句柄
-         * @param APCFG_WIFI_CONNECTED_BIT 要等待的事件位
-         * @param pdTRUE                 返回前清除该位（下次需要重新设置）
-         * @param pdFALSE                不需要所有位都设置（只等一个位）
-         * @param pdMS_TO_TICKS(10000)   超时时间10秒
-         * @return 返回时事件组的值
+         * 等待多个事件：
+         * - CONNECTED_BIT: 用户提交了WiFi配置
+         * - FAIL_BIT: WiFi连接失败
+         * - SUCCESS_BIT: WiFi连接成功
          */
         ev = xEventGroupWaitBits(apcfg_ev,
-                                 APCFG_WIFI_CONNECTED_BIT,
+                                 ALL_BITS,
                                  pdTRUE,                    // 清除事件位
                                  pdFALSE,                   // 等待任意一个位
                                  pdMS_TO_TICKS(1000 * 10)); // 10秒超时
 
-        // 检查是否收到连接请求（事件位被设置）
+        // 【事件1】用户提交WiFi配置，开始连接
         if (ev & APCFG_WIFI_CONNECTED_BIT)
         {
             ESP_LOGI(TAG, "收到WiFi配置，准备连接: %s", current_ssid);
-
-            // 1. 先停止WebSocket服务器（不再需要配网界面）
-            ws_server_stop();
-
-            // 2. 使用用户提供的SSID和密码连接WiFi
+            // 保持APSTA模式和WebSocket连接，直接尝试连接WiFi
             wifi_manager_connect(current_ssid, current_password);
         }
-        // 超时时ev不包含该位，循环继续等待
+
+        // 【事件2】WiFi连接失败
+        if (ev & APCFG_WIFI_FAIL_BIT)
+        {
+            ESP_LOGW(TAG, "WiFi连接失败（密码错误或找不到热点）");
+
+            // 直接通过现有WebSocket连接发送失败状态给网页
+            // AP和WebSocket一直保持运行，用户可以直接重试
+            send_status_to_web("failed", current_ssid, NULL);
+
+            // 重置配网标志，允许用户重新尝试
+            is_configuring = false;
+        }
+
+        // 【事件3】WiFi连接成功
+        if (ev & APCFG_WIFI_SUCCESS_BIT)
+        {
+            char ip_str[16] = {0};
+            wifi_manager_get_ip(ip_str);
+            ESP_LOGI(TAG, "WiFi连接成功！IP: %s", ip_str);
+
+            // 发送成功状态给网页
+            send_status_to_web("connected", current_ssid, ip_str);
+
+            // 配网完成
+            is_configuring = false;
+
+            // 延迟一段时间让网页收到消息
+            vTaskDelay(pdMS_TO_TICKS(2000));
+
+            // 关闭WebSocket服务器
+            ws_server_stop();
+            ESP_LOGI(TAG, "配网完成，已关闭WebSocket服务器");
+
+            // 关闭AP热点，切换到纯STA模式
+            wifi_manager_stop_ap();
+            ESP_LOGI(TAG, "AP热点已关闭");
+        }
+    }
+}
+
+/**
+ * @brief 内部WiFi状态回调 - 处理配网结果
+ *
+ * 当WiFi连接成功或失败时，设置对应事件位通知ap_wifi_task
+ * 同时转发状态给用户回调
+ */
+static void internal_wifi_callback(WIFI_STATE state)
+{
+    switch (state)
+    {
+    case WIFI_STATE_CONNECTED:
+        ESP_LOGI(TAG, "内部回调: WiFi连接成功");
+        // 如果正在配网流程中，设置成功事件位
+        if (is_configuring)
+        {
+            xEventGroupSetBits(apcfg_ev, APCFG_WIFI_SUCCESS_BIT);
+        }
+        // 转发给用户回调
+        if (user_wifi_cb)
+            user_wifi_cb(WIFI_STATE_CONNECTED);
+        break;
+
+    case WIFI_STATE_DISCONNECTED:
+        ESP_LOGW(TAG, "内部回调: WiFi断开");
+        // 转发给用户回调
+        if (user_wifi_cb)
+            user_wifi_cb(WIFI_STATE_DISCONNECTED);
+        break;
+
+    case WIFI_STATE_CONNECT_FAIL:
+        ESP_LOGW(TAG, "内部回调: WiFi连接失败");
+        // 如果正在配网流程中，设置失败事件位
+        if (is_configuring)
+        {
+            xEventGroupSetBits(apcfg_ev, APCFG_WIFI_FAIL_BIT);
+        }
+        // 转发给用户回调（用户可能也想知道）
+        if (user_wifi_cb)
+            user_wifi_cb(WIFI_STATE_CONNECT_FAIL);
+        break;
     }
 }
 
@@ -209,8 +300,11 @@ static void ap_wifi_task(void *arg)
  */
 void ap_wifi_init(p_wifi_state_callback f)
 {
-    // 1. 初始化WiFi管理器，传入状态回调
-    wifi_manager_init(f);
+    // 保存用户回调
+    user_wifi_cb = f;
+
+    // 1. 初始化WiFi管理器，传入内部回调（用于处理配网结果）
+    wifi_manager_init(internal_wifi_callback);
 
     // 2. 加载配网HTML页面到内存
     html_code = init_web_page_buffer();
@@ -310,8 +404,10 @@ void wifi_scan_handle(wifi_ap_record_t *ap, int ap_count)
  * 【支持的消息类型】
  * 1. 扫描请求: {"scan": "start"}
  * 2. 连接请求: {"ssid": "WiFi名称", "password": "密码"}
+ *
+ * 注意：此函数不能声明为static，因为ap_wifi_task中需要通过extern引用
  */
-static void ws_receive_handle(const char *data, int len)
+void ws_receive_handle(const char *data, int len)
 {
     ESP_LOGI(TAG, "收到WebSocket消息: %.*s", len, data);
 
@@ -354,6 +450,9 @@ static void ws_receive_handle(const char *data, int len)
             snprintf(current_password, sizeof(current_password), "%s", password_value);
 
             ESP_LOGI(TAG, "收到WiFi配置 - SSID: %s", current_ssid);
+
+            // 标记进入配网流程（用于判断连接成功/失败事件）
+            is_configuring = true;
 
             // 设置事件位，通知ap_wifi_task去执行连接
             // 这样可以立即返回给WebSocket，不会阻塞

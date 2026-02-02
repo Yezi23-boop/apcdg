@@ -229,6 +229,16 @@ esp_err_t ws_server_start(ws_server_config_t *config)
         return ESP_FAIL;
     }
 
+    // 【防止重复启动】如果服务器已在运行，直接返回成功
+    if (server_handle != NULL)
+    {
+        ESP_LOGI(TAG, "HTTP服务器已在运行，无需重复启动");
+        // 更新配置（回调函数可能变化）
+        http_html = config->html_code;
+        ws_server_cb = config->cb;
+        return ESP_OK;
+    }
+
     // 保存配置到模块变量
     http_html = config->html_code;
     ws_server_cb = config->cb;

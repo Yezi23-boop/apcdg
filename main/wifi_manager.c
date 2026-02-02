@@ -51,7 +51,7 @@
 #define DEFAULT_AP_PASSWORD "12345678"
 
 /** STA模式连接失败后的最大重试次数 */
-#define MAX_CONNECT_RETRY 6
+#define MAX_CONNECT_RETRY 1
 
 /*============================================================================
  *                           模块静态变量
@@ -160,7 +160,8 @@ static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_
             {
                 wifi_mode_t mode;
                 esp_wifi_get_mode(&mode);
-                if (mode == WIFI_MODE_STA)
+                // STA或APSTA模式都需要重试
+                if (mode == WIFI_MODE_STA || mode == WIFI_MODE_APSTA)
                 {
                     ESP_LOGI(TAG, "WiFi断开，第%d次重连...", sta_connect_count + 1);
                     esp_wifi_connect();
@@ -169,7 +170,10 @@ static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_
             }
             else
             {
-                ESP_LOGW(TAG, "达到最大重试次数(%d)，停止重连", MAX_CONNECT_RETRY);
+                ESP_LOGW(TAG, "达到最大重试次数(%d)，连接失败", MAX_CONNECT_RETRY);
+                // 通知上层连接失败（密码错误、找不到热点等）
+                if (wifi_state_cb)
+                    wifi_state_cb(WIFI_STATE_CONNECT_FAIL);
             }
             break;
 
@@ -344,26 +348,34 @@ esp_err_t wifi_manager_connect(const char *ssid, const char *password)
     snprintf((char *)wifi_config.sta.password, 63, "%s", password);
 
     // 先断开现有连接
-    ESP_ERROR_CHECK(esp_wifi_disconnect());
+    esp_wifi_disconnect();
 
-    // 检查当前模式，如果不是STA模式需要切换
+    // 检查当前模式
     wifi_mode_t mode;
     esp_wifi_get_mode(&mode);
 
-    if (mode != WIFI_MODE_STA)
+    if (mode == WIFI_MODE_APSTA)
     {
-        // 从其他模式切换到STA模式
+        // 【APSTA模式】保持AP运行，只配置STA部分
+        // 这样配网失败时用户仍可通过热点重试
+        ESP_LOGI(TAG, "APSTA模式，保持AP运行，配置STA连接...");
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+        esp_wifi_connect();
+    }
+    else if (mode == WIFI_MODE_STA)
+    {
+        // 已经是STA模式，直接配置并连接
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+        esp_wifi_connect();
+    }
+    else
+    {
+        // 从AP模式切换到STA模式
         ESP_LOGI(TAG, "切换到STA模式");
         ESP_ERROR_CHECK(esp_wifi_stop());
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
         esp_wifi_start(); // 启动后会触发WIFI_EVENT_STA_START，然后自动连接
-    }
-    else
-    {
-        // 已经是STA模式，直接配置并连接
-        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-        esp_wifi_connect();
     }
 
     return ESP_OK;
@@ -443,6 +455,44 @@ esp_err_t wifi_manager_ap(void)
 
     return esp_wifi_start();
 }
+
+/**
+ * @brief 关闭AP模式，切换到纯STA模式
+ *
+ * 【使用场景】
+ * 配网成功后，ESP32已连接到目标WiFi，不再需要配网热点
+ * 调用此函数关闭AP，只保留STA模式
+ *
+ * @return ESP_OK成功，ESP_FAIL失败
+ */
+esp_err_t wifi_manager_stop_ap(void)
+{
+    wifi_mode_t mode;
+    esp_wifi_get_mode(&mode);
+
+    // 只有在APSTA模式下才需要关闭AP
+    if (mode != WIFI_MODE_APSTA)
+    {
+        ESP_LOGI(TAG, "当前不是APSTA模式，无需关闭AP");
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "关闭AP，切换到纯STA模式");
+
+    // 直接切换到STA模式（保持现有的STA连接）
+    esp_err_t ret = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (ret == ESP_OK)
+    {
+        ESP_LOGI(TAG, "已切换到STA模式，AP热点已关闭");
+    }
+    else
+    {
+        ESP_LOGE(TAG, "切换模式失败: %s", esp_err_to_name(ret));
+    }
+
+    return ret;
+}
+
 /*============================================================================
  *                           WiFi扫描函数
  *============================================================================*/
@@ -583,4 +633,32 @@ esp_err_t wifi_manager_scan(p_wifi_scan_callback f)
         ESP_LOGW(TAG, "扫描进行中，请稍后重试");
         return ESP_ERR_INVALID_STATE;
     }
+}
+
+/**
+ * @brief 获取当前STA的IP地址
+ *
+ * @param ip_str 输出缓冲区，至尖16字节（"255.255.255.255"）
+ * @return ESP_OK 成功，ESP_FAIL 未连接
+ */
+esp_err_t wifi_manager_get_ip(char *ip_str)
+{
+    if (!is_sta_connected || ip_str == NULL)
+    {
+        return ESP_FAIL;
+    }
+
+    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (sta_netif == NULL)
+    {
+        return ESP_FAIL;
+    }
+
+    esp_netif_ip_info_t ip_info;
+    if (esp_netif_get_ip_info(sta_netif, &ip_info) == ESP_OK)
+    {
+        sprintf(ip_str, IPSTR, IP2STR(&ip_info.ip));
+        return ESP_OK;
+    }
+    return ESP_FAIL;
 }

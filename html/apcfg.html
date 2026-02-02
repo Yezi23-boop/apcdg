@@ -385,8 +385,7 @@
         var gateway = `ws://${window.location.hostname}/ws`;
         var websocket;
         let scanTimeId;
-        let isConfiguring = false;  // 标记是否正在配网
-        let configuredSsid = '';    // 记录配网的SSID
+        let connectTimeId;  // 连接超时计时器
 
         window.addEventListener('load', onLoad);
 
@@ -406,31 +405,13 @@
         function onOpen(event) {
             console.log('WebSocket connected');
             updateConnectionStatus(true, '设备已连接');
-            // 重置配网状态
-            isConfiguring = false;
-            configuredSsid = '';
         }
 
         function onClose(event) {
             console.log('WebSocket closed');
-
-            // 如果正在配网，说明设备正在切换WiFi模式
-            if (isConfiguring) {
-                // 配网完成，显示绿色成功状态
-                updateConnectionStatus(true, '配网完成');
-                hideLoading();
-                showStatus(`🎉 配网指令已发送！设备正在连接 "${configuredSsid}"，请检查设备串口输出确认连接状态。`, 'success');
-
-                // 显示完成提示
-                document.getElementById('submit-btn').disabled = true;
-                document.getElementById('submit-btn').innerHTML = '<span>✓</span><span>配网完成</span>';
-
-                // 重置标记，不再自动重连
-                isConfiguring = false;
-                return;
-            }
-
             updateConnectionStatus(false, '连接断开，重连中...');
+            // 清除连接超时计时器
+            clearTimeout(connectTimeId);
             setTimeout(initWebSocket, 3000);
         }
 
@@ -450,7 +431,7 @@
                 handleWifiList(data.wifi_list);
             }
 
-            // 处理连接状态（如果ESP32能发回来的话）
+            // 处理连接状态
             if (data.status) {
                 handleConnectStatus(data);
             }
@@ -465,10 +446,16 @@
 
             listEl.innerHTML = '';
 
-            // 按信号强度排序
-            wifiList.sort((a, b) => b.rssi - a.rssi);
-
+            // 按信号强度排序并去重（同名SSID只保留信号最强的）
+            const uniqueWifi = {};
             wifiList.forEach(wifi => {
+                if (!uniqueWifi[wifi.ssid] || uniqueWifi[wifi.ssid].rssi < wifi.rssi) {
+                    uniqueWifi[wifi.ssid] = wifi;
+                }
+            });
+            const sortedList = Object.values(uniqueWifi).sort((a, b) => b.rssi - a.rssi);
+
+            sortedList.forEach(wifi => {
                 const item = document.createElement('div');
                 item.className = 'wifi-item';
                 item.innerHTML = `
@@ -497,19 +484,28 @@
             hideLoading();
             btn.disabled = false;
             btn.innerHTML = '<span>🔄</span><span>重新扫描</span>';
-            showStatus(`扫描完成，发现 ${wifiList.length} 个网络`, 'success');
+            showStatus(`扫描完成，发现 ${sortedList.length} 个网络`, 'success');
         }
 
         function handleConnectStatus(data) {
+            // 清除连接超时计时器
+            clearTimeout(connectTimeId);
             hideLoading();
-            isConfiguring = false;
+
+            const btn = document.getElementById('submit-btn');
+
             if (data.status === 'connected') {
-                showStatus(`✓ 已连接到 ${data.ssid}，IP: ${data.ip}`, 'success');
-                document.getElementById('submit-btn').innerHTML = '<span>✓</span><span>连接成功</span>';
+                showStatus(`✓ 已连接到 "${data.ssid}"，IP: ${data.ip}`, 'success');
+                btn.disabled = true;
+                btn.innerHTML = '<span>✓</span><span>连接成功</span>';
+                updateConnectionStatus(true, '配网成功');
             } else if (data.status === 'failed') {
-                showStatus('✗ 连接失败，请检查密码', 'error');
-                document.getElementById('submit-btn').disabled = false;
-                document.getElementById('submit-btn').innerHTML = '<span>🚀</span><span>重新配网</span>';
+                showStatus(`✗ 连接 "${data.ssid}" 失败，请检查密码后重试`, 'error');
+                btn.disabled = false;
+                btn.innerHTML = '<span>🚀</span><span>重新配网</span>';
+                // 清空密码框，聚焦以便重新输入
+                document.getElementById('password').value = '';
+                document.getElementById('password').focus();
             }
         }
 
@@ -543,16 +539,19 @@
                 return;
             }
 
-            // 标记正在配网
-            isConfiguring = true;
-            configuredSsid = ssid;
-
             this.disabled = true;
-            this.innerHTML = '<span>⏳</span><span>配网中...</span>';
-            showLoading('正在发送配置到设备...');
+            this.innerHTML = '<span>⏳</span><span>连接中...</span>';
+            showLoading(`正在连接 "${ssid}"...`);
 
             websocket.send(JSON.stringify({ ssid, password }));
-            showStatus('配置已发送，设备即将重启WiFi...', 'success');
+
+            // 设置连接超时（15秒，因为ESP32会重试2次）
+            connectTimeId = setTimeout(() => {
+                hideLoading();
+                this.disabled = false;
+                this.innerHTML = '<span>🚀</span><span>重新配网</span>';
+                showStatus('连接超时，请重试', 'error');
+            }, 15000);
         });
 
         function showLoading(text) {
